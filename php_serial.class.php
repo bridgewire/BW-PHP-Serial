@@ -1,7 +1,4 @@
 <?php
-define ("SERIAL_DEVICE_NOTSET", 0);
-define ("SERIAL_DEVICE_SET", 1);
-define ("SERIAL_DEVICE_OPENED", 2);
 
 /**
  * Serial port control class
@@ -20,10 +17,15 @@ define ("SERIAL_DEVICE_OPENED", 2);
  */
 class phpSerial
 {
+	const SERIAL_DEVICE_NOTSET = 0;
+	const SERIAL_DEVICE_SET    = 1;
+	const SERIAL_DEVICE_OPENED = 2;
+
 	var $_device = null;
 	var $_windevice = null;
 	var $_dHandle = null;
-	var $_dState = SERIAL_DEVICE_NOTSET;
+	var $_dState = self::SERIAL_DEVICE_NOTSET;
+	var $_dPrevState = self::SERIAL_DEVICE_NOTSET;
 	var $_buffer = "";
 	var $_os = "";
 
@@ -102,7 +104,7 @@ class phpSerial
 	 */
 	function deviceSet ($device)
 	{
-		if ($this->_dState !== SERIAL_DEVICE_OPENED)
+		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
 		{
 			if ($this->_os === "linux")
 			{
@@ -114,7 +116,7 @@ class phpSerial
 				if ($this->_exec("stty -F " . $device) === 0)
 				{
 					$this->_device = $device;
-					$this->_dState = SERIAL_DEVICE_SET;
+					$this->change_dState(self::SERIAL_DEVICE_SET);
 					return true;
 				}
 			}
@@ -123,7 +125,7 @@ class phpSerial
 				if ($this->_exec("stty -f " . $device) === 0)
 				{
 					$this->_device = $device;
-					$this->_dState = SERIAL_DEVICE_SET;
+					$this->change_dState(self::SERIAL_DEVICE_SET);
 					return true;
 				}
 			}
@@ -133,7 +135,7 @@ class phpSerial
 				{
 					$this->_windevice = "COM" . $matches[1];
 					$this->_device = "\\.\com" . $matches[1];
-					$this->_dState = SERIAL_DEVICE_SET;
+					$this->change_dState(self::SERIAL_DEVICE_SET);
 					return true;
 				}
 			}
@@ -156,13 +158,13 @@ class phpSerial
 	 */
 	function deviceOpen ($mode = "r+b")
 	{
-		if ($this->_dState === SERIAL_DEVICE_OPENED)
+		if ($this->_dState === self::SERIAL_DEVICE_OPENED)
 		{
 			trigger_error("The device is already opened", E_USER_NOTICE);
 			return true;
 		}
 
-		if ($this->_dState === SERIAL_DEVICE_NOTSET)
+		if ($this->_dState === self::SERIAL_DEVICE_NOTSET)
 		{
 			trigger_error("The device must be set before to be open", E_USER_WARNING);
 			return false;
@@ -179,7 +181,7 @@ class phpSerial
 		if ($this->_dHandle !== false)
 		{
 			stream_set_blocking($this->_dHandle, 0);
-			$this->_dState = SERIAL_DEVICE_OPENED;
+			$this->change_dState(self::SERIAL_DEVICE_OPENED);
 			return true;
 		}
 
@@ -195,7 +197,7 @@ class phpSerial
 	 */
 	function deviceClose ()
 	{
-		if ($this->_dState !== SERIAL_DEVICE_OPENED)
+		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
 		{
 			return true;
 		}
@@ -203,7 +205,7 @@ class phpSerial
 		if (fclose($this->_dHandle))
 		{
 			$this->_dHandle = null;
-			$this->_dState = SERIAL_DEVICE_SET;
+			$this->change_dState(self::SERIAL_DEVICE_SET);
 			return true;
 		}
 
@@ -229,7 +231,7 @@ class phpSerial
 	 */
 	function confBaudRate ($rate)
 	{
-		if ($this->_dState !== SERIAL_DEVICE_SET)
+		if ($this->_dState !== self::SERIAL_DEVICE_SET)
 		{
 			trigger_error("Unable to set the baud rate : the device is either not set or opened", E_USER_WARNING);
 			return false;
@@ -283,7 +285,7 @@ class phpSerial
 	 */
 	function confParity ($parity)
 	{
-		if ($this->_dState !== SERIAL_DEVICE_SET)
+		if ($this->_dState !== self::SERIAL_DEVICE_SET)
 		{
 			trigger_error("Unable to set parity : the device is either not set or opened", E_USER_WARNING);
 			return false;
@@ -331,7 +333,7 @@ class phpSerial
 	 */
 	function confCharacterLength ($int)
 	{
-		if ($this->_dState !== SERIAL_DEVICE_SET)
+		if ($this->_dState !== self::SERIAL_DEVICE_SET)
 		{
 			trigger_error("Unable to set length of a character : the device is either not set or opened", E_USER_WARNING);
 			return false;
@@ -372,7 +374,7 @@ class phpSerial
 	 */
 	function confStopBits ($length)
 	{
-		if ($this->_dState !== SERIAL_DEVICE_SET)
+		if ($this->_dState !== self::SERIAL_DEVICE_SET)
 		{
 			trigger_error("Unable to set the length of a stop bit : the device is either not set or opened", E_USER_WARNING);
 			return false;
@@ -417,7 +419,7 @@ class phpSerial
 	 */
 	function confFlowControl ($mode)
 	{
-		if ($this->_dState !== SERIAL_DEVICE_SET)
+		if ($this->_dState !== self::SERIAL_DEVICE_SET)
 		{
 			trigger_error("Unable to set flow control mode : the device is either not set or opened", E_USER_WARNING);
 			return false;
@@ -517,7 +519,7 @@ class phpSerial
 	 */
 	function readPort ($count = 0)
 	{
-		if ($this->_dState !== SERIAL_DEVICE_OPENED)
+		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
 		{
 			trigger_error("Device must be opened to read it", E_USER_WARNING);
 			return false;
@@ -601,9 +603,23 @@ class phpSerial
 	// INTERNAL TOOLKIT -- {START}
 	//
 
+	/**
+	 * Protected
+	 * Change Device state. for managing state info
+	 * 
+	 * @param int $newstate the state change to. one of the SERIAL_DEVICE_* constants.
+	 * @return int
+	 */
+	protected function change_dState( $newstate )
+	{
+		$this->_dPrevState = $this->_dState; // to detect 'closed' state. perhaps other.
+		$this->_dState = $newstate;
+		return $this->_dState;
+	}
+
 	function _ckOpened()
 	{
-		if ($this->_dState !== SERIAL_DEVICE_OPENED)
+		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
 		{
 			trigger_error("Device must be opened", E_USER_WARNING);
 			return false;
@@ -614,7 +630,8 @@ class phpSerial
 
 	function _ckClosed()
 	{
-		if ($this->_dState !== SERIAL_DEVICE_CLOSED)
+		// to differentiate 'closed' from 'set' we check both _dState and _dPrevState
+		if ($this->_dState !== self::SERIAL_DEVICE_SET || $this->_dPrevState !== self::SERIAL_DEVICE_OPENED)
 		{
 			trigger_error("Device must be closed", E_USER_WARNING);
 			return false;
