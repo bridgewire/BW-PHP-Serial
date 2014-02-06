@@ -128,7 +128,7 @@ class phpSerial
 				if ($this->_exec($sttycmd) === 0)
 				{
 					$this->_device = $device;
-					$this->change_dState(self::SERIAL_DEVICE_SET);
+					$this->_changeState(self::SERIAL_DEVICE_SET);
 					return true;
 				}
 			}
@@ -137,7 +137,7 @@ class phpSerial
 				if ($this->_exec("stty -f " . $device) === 0)
 				{
 					$this->_device = $device;
-					$this->change_dState(self::SERIAL_DEVICE_SET);
+					$this->_changeState(self::SERIAL_DEVICE_SET);
 					return true;
 				}
 			}
@@ -147,7 +147,7 @@ class phpSerial
 				{
 					$this->_windevice = "COM" . $matches[1];
 					$this->_device = "\\.\com" . $matches[1];
-					$this->change_dState(self::SERIAL_DEVICE_SET);
+					$this->_changeState(self::SERIAL_DEVICE_SET);
 					return true;
 				}
 			}
@@ -193,7 +193,7 @@ class phpSerial
 		if ($this->_dHandle !== false)
 		{
 			stream_set_blocking($this->_dHandle, 0);
-			$this->change_dState(self::SERIAL_DEVICE_OPENED);
+			$this->_changeState(self::SERIAL_DEVICE_OPENED);
 			return true;
 		}
 
@@ -217,7 +217,7 @@ class phpSerial
 		if (fclose($this->_dHandle))
 		{
 			$this->_dHandle = null;
-			$this->change_dState(self::SERIAL_DEVICE_SET);
+			$this->_changeState(self::SERIAL_DEVICE_SET);
 			return true;
 		}
 
@@ -622,7 +622,7 @@ class phpSerial
 	 * @param int $newstate the state change to. one of the SERIAL_DEVICE_* constants.
 	 * @return int
 	 */
-	protected function change_dState( $newstate )
+	protected function _changeState( $newstate )
 	{
 		$this->_dPrevState = $this->_dState; // to detect 'closed' state. perhaps other.
 		$this->_dState = $newstate;
