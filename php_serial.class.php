@@ -234,6 +234,29 @@ class phpSerial
 	//
 
 	/**
+	 * Configure all standard config options. 
+	 * See other conf* methods for information about a specific arugment.
+	 *
+	 * @param string $device the name of the device to be used
+	 * @param int $rate the rate to set the port in
+	 * @param int $charbits length of a character (5 <= length <= 8)
+	 * @param string $parity one of the modes
+	 * @param float $stopbits the length of a stop bit.
+	 * @param string $mode Set the flow control mode.
+	 * @return bool  true means all settings succeeded.
+	 */
+	function confPort( $device, $rate=57600, $charbits=8, $parity='none', $stopbits=1, $mode='none' )
+	{
+		$sc =  ( $this->deviceSet ($device)               ? 1 : 0 );  // ex: "/dev/ttyS0"
+		$sc += ( $this->confBaudRate ( $rate )            ? 1 : 0 );  // 9600
+		$sc += ( $this->confCharacterLength ( $charbits ) ? 1 : 0 );  // 5,6,7,8
+		$sc += ( $this->confParity ( $parity )            ? 1 : 0 );  // even, none, ...
+		$sc += ( $this->confStopBits( $stopbits )         ? 1 : 0 );  // 1, 1.5, 2
+		$sc += ( $this->confFlowControl( $mode )          ? 1 : 0 );  // none, rts/cts, xon/xoff
+		return ( $sc == 6 );                                          // true if all above returned 1
+	}
+
+	/**
 	 * Configure the Baud Rate
 	 * Possible rates : 110, 150, 300, 600, 1200, 2400, 4800, 9600, 38400,
 	 * 57600 and 115200.
