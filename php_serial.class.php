@@ -113,7 +113,19 @@ class phpSerial
 					$device = "/dev/ttyS" . ($matches[1] - 1);
 				}
 
-				if ($this->_exec("stty -F " . $device) === 0)
+				// setup some better standard serial-port parameters.
+				// -F $defice              : which device to config?
+				// tell the tty to do less. we want fewer suprises, more raw data.
+				// '-hup'                  : don't send hup when last process closes tty
+				// 'ignbrk'                : ignore break characters  (pass them through)
+				// '-icrnl -onlcr'         : do not translate \r <--> \n  at all.
+				// '-opost'                : don't post-process outgoing data
+				// '-isig -icanon -iexten' : do not enable various special characters
+				// '-echo -echoe -echok'   : turn off some special echo options
+				$sttycmd = 'stty -F '.$device;
+				$sttycmd .= ' -hup ignbrk -icrnl -onlcr -opost -isig -icanon -iexten -echo -echoe -echok';
+
+				if ($this->_exec($sttycmd) === 0)
 				{
 					$this->_device = $device;
 					$this->change_dState(self::SERIAL_DEVICE_SET);
