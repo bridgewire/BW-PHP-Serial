@@ -14,6 +14,16 @@
  * @thanks Alec Avedisyan for help and testing with reading
  * @thanks Jim Wright for OSX cleanup/fixes.
  * @copyright under GPL 2 licence
+ *
+ * As of 2014/02/18, all the IO of this class has essentially been rewritten.
+ * These changes are major and include many changes to the public interface.
+ * Code written to take advantage of this class will likely need to be altered.
+ * Many of the changes have not yet been tested on any platform and those that
+ * have were tested only on a Raspbian, a Linux variant on the Raspberry PI (v2).
+ * The changes are expected to fix several reliability issues, will likely work
+ * well on all platforms, but push some data management to the user of this class
+ * thus it is less simple to use (and more powerful).
+ * @thanks and/or curses to Christiana Johnson for these changes.
  */
 class phpSerial
 {
@@ -26,7 +36,9 @@ class phpSerial
 	var $_dHandle = null;
 	var $_dState = self::SERIAL_DEVICE_NOTSET;
 	var $_dPrevState = self::SERIAL_DEVICE_NOTSET;
+	var $_dBlocking = true;
 	var $_buffer = "";
+	var $_buflen = 0;
 	var $_os = "";
 
 	/**
@@ -225,6 +237,23 @@ class phpSerial
 		return false;
 	}
 
+	/**
+	 * Returns a device file handle to allow external stream_select() usages
+	 *
+	 * @return file pointer resource , the  serial port filehandle
+	 */
+	function getFilehandle ()
+	{
+		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
+		{
+			trigger_error("Device must be opened to get the file handle", E_USER_WARNING);
+			return false;
+		}
+
+		return $this->_dHandle;
+	}
+
+
 	//
 	// OPEN/CLOSE DEVICE SECTION -- {STOP}
 	//
@@ -254,6 +283,24 @@ class phpSerial
 		$sc += ( $this->confStopBits( $stopbits )         ? 1 : 0 );  // 1, 1.5, 2
 		$sc += ( $this->confFlowControl( $mode )          ? 1 : 0 );  // none, rts/cts, xon/xoff
 		return ( $sc == 6 );                                          // true if all above returned 1
+	}
+
+
+	/**
+	 * Configure the stream blocking parameter.
+	 * 
+	 * @param bool $on true if blocking is desired
+	 * @return void;
+	 */
+
+	function confBlocking( $on )
+	{
+		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
+		{
+			trigger_error("Device must be opened to configure the file handle", E_USER_WARNING);
+			return false;
+		}
+		$this->_dBlocking = $on;
 	}
 
 	/**
@@ -534,25 +581,183 @@ class phpSerial
 	 * Sends a string to the device
 	 *
 	 * @param string $str string to be sent to the device
-	 * @param float $waitForReply time to wait for the reply (in seconds)
+	 * @param int $len number of bytes to write.
+	 *   if($len <= 0) then attempt to write the whole buffer.
+	 * @return int indicating the number of bytes actually written.
 	 */
-	function sendMessage ($str, $waitForReply = 0.1)
+	function sendMessage ($str, $len=0)
 	{
-		$this->_buffer .= $str;
+		if( ! empty($str) ) // _buffer may not be empty
+		{
+			$this->_buffer .= $str;
+			$this->_buflen += strlen($str);
+		}
 
-		if ($this->autoflush === true) $this->serialflush();
+		$written = 0;
+		$bytes = 0;
 
-		usleep((int) ($waitForReply * 1000000));
+		if ($this->autoflush === true || $len < 0)
+		{
+			// success means the whole buffer was written.
+			$bytes = $this->_buflen;
+			if( ! $this->serialflush() )
+				$bytes = false;
+		}
+		elseif ($len != 0)
+		{
+			// do not try to write more than we have in the buffer.
+			$len = ( $len <= $this->_buflen ? $len : $this->_buflen );
+
+			$written = 0;
+			do{ 
+				$bytes = $this->writePort( $this->_buffer, $len - $written );
+				if ($bytes !== false)
+					$this->_buflen -= $bytes;
+			} while( $written < $len && $bytes !== false );
+
+			// but...  what if $written !== 0 before this?
+			if( $bytes === false )
+				$written = false;
+		}
+		// else { write nothing at all right now. wait for explicit flush. }
+
+		return $written;
+	}
+
+	public function appendToBuffer( $cntnt ) { $this->_buffer .= $cntnt; $this->_buflen = strlen($this->_buffer); }
+	public function setBuffer( $cntnt )      { $this->_buffer  = $cntnt; $this->_buflen = strlen($this->_buffer); }
+	public function getBuffer() { return $this->_buffer; }
+	public function getBufLength() { return $this->_buflen; }
+
+	/**
+	 * XXX Experimental.
+	 * This should work for all platforms, including windows, but is untested.
+	 *
+	 * Writes to the port.  A reaonably standard write() function.
+	 *
+	 * @pararm string &$content  This the content to write.  The resulting
+	 *  value of this parameter, after return, will be shorter if successful.
+	 * @pararm int $len  count of bytes characters write.(from write docs)
+	 *  writing will stop after len bytes have been written or the end
+	 *  of content is reached, whichever comes first.
+	 * @pararm float $timeout number of seconds to try before returning.
+	 *  null timeout means block until finished writing or until an error
+	 * @return int the count of bytes written or false on error.
+	 */
+	public function writePort( &$content, $count=null, $timeout=null )
+	{
+		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
+		{
+			trigger_error("Device must be opened to write to it", E_USER_WARNING);
+			return false;
+		}
+
+		// return 0 if there's nothing to write. validate $count.
+		if ($count !== null && $count <= 0 )                return 0;
+		if ($count === null || strlen($content) < $count )  $count = strlen($content);
+		if ($count == 0)                                    return 0;
+
+		// negative timeout has already timed out.
+		if ($timeout !== null && $timeout < 0 )             return 0;
+		// but now negative timeout becomes a code for "never timeout"
+		if ($timeout === null)                              $timeout = -1;
+
+		$starttime = microtime( true );
+		$totcnt = 0;	// at all times, this is the total count of bytes sent
+
+		$error = false; // stop loop if there's an error
+		$et = 0;		// elapsed time. if timeout==0: execute all, once.
+
+		do {
+			$ready_count = 1;
+
+			// because non-blocking is set on _dHandle, we must implement a 
+			// blocking call on our own.  We do this using stream_select().
+			// _dBlocking == true by default, so this code, in the 
+			// following block of code, will probably run.
+			if( $this->_dBlocking )
+			{
+				// if blocking, stop and wait for $timeout seconds
+				// or until there's something to read
+				$loop_count = 0;
+				do {
+					$loop_count++;
+					$r = null;
+					$w = array( $this->_dHandle );
+					$e = null;
+
+					if( $timeout < 0 ) // "no timeout" can be a very long time
+						$ready_count = stream_select( $r, $w, $e, NULL );
+					else
+					{
+						// if $et == $timeout then to_usec == 0, and select() won't block
+						if( $et > $timeout )  // timed out.
+							break;
+
+						$to_sec = $to_usec = 0; // php-style declaration
+						floatsec_to_secusec( $timeout - $et, $to_sec, $to_usec );
+
+						$ready_count = stream_select( $r, $w, $e, $to_sec, $to_usec );
+					}
+
+					// if we're getting errors terminate this loop after 
+					// only a few tries.  this should happen very rarely.
+					if ($loop_count > 4)
+						break;
+				} while ( $ready_count === false );
+
+				if ($ready_count === false)	// needed once in a blue moon.
+					$ready_count = 0;
+			}
+
+			if ($ready_count > 0)
+			{
+				$ac = fwrite($this->_dHandle, $count-$totcnt);
+				if( $ac === false )
+					$error = true;
+				elseif( $ac > 0 )
+				{
+					$totcnt += $ac;
+					$content = substr( $content, $ac );
+				}
+			}
+
+			if( $timeout >= 0 )
+			{
+				$et = microtime( true ) - $starttime;
+				if( $et >= $timeout )	// timed out
+					break;				// break from while() loop. stop everything.
+			}
+		} while (   $totcnt < $count	// stop if total meets read count sought
+				 && $this->_dBlocking	// !!!  do not loop if non-blocking
+				 && ! $error );			// stop if error
+
+		// we want to report an error if there is one. setting totcnt to 
+		// false doesn't destroy information because totcnt ==
+		// strlen($content) and $content *is* returned.
+		if( $error )
+			$totcnt = false;
+
+		return $totcnt;  // set to false if error
 	}
 
 	/**
+	 * XXX Experimental but should fix bugs, hopefully without making new ones.
+	 * This should work for all platforms, including windows, but is untested.
+	 *
 	 * Reads the port until no new datas are availible, then return the content.
 	 *
+	 * @pararm string &$content  This value is ignored, but the parameter is
+	 *  used to return the data read from the port. Parameter is set to ""
+	 *  if no data is read.
 	 * @pararm int $count number of characters to be read (will stop before
 	 * 	if less characters are in the buffer)
-	 * @return string
+	 * @pararm float $timeout number of seconds to try before returning.
+	 *  null timeout means block until finished reading or until an error.
+	 *  This parameter is ignored in non-blocking mode.
+	 * @return int the count of bytes read or false on error.
 	 */
-	function readPort ($count = 0)
+	function readPort (&$content, $count = null, $timeout = null)
 	{
 		if ($this->_dState !== self::SERIAL_DEVICE_OPENED)
 		{
@@ -560,51 +765,100 @@ class phpSerial
 			return false;
 		}
 
-		if ($this->_os === "linux" || $this->_os === "osx")
-			{
-			// Behavior in OSX isn't to wait for new data to recover, but just grabs what's there!
-			// Doesn't always work perfectly for me in OSX
-			$content = ""; $i = 0;
+		if ($count !== null && $count <= 0 )    return 0;
+		if ($count === null)                    $count = 0;
+		if ($timeout !== null && $timeout < 0 ) return 0;
+		if ($timeout === null)                  $timeout = -1;
 
-			if ($count !== 0)
+		$content = "";
+		$starttime = microtime( true );
+		$totcnt = 0;	// at all times, this is the total count of bytes read
+
+		$error = false; // stop loop if there's an error
+		$et = 0;		// elapsed time. if timeout==0: execute all, once.
+
+		do {
+			$ready_count = 1;
+
+			// because non-blocking is set on _dHandle, we must implement a 
+			// blocking call on our own.  We do this using stream_select().
+			// _dBlocking == true by default, so this code, in the 
+			// following block of code, will probably run.
+			if( $this->_dBlocking )
 			{
+				// if blocking, stop and wait for $timeout seconds
+				// or until there's something to read
+				$loop_count = 0;
 				do {
-					if ($i > $count) $content .= fread($this->_dHandle, ($count - $i));
-					else $content .= fread($this->_dHandle, 128);
-				} while (($i += 128) === strlen($content));
+					$loop_count++;
+					$r = array( $this->_dHandle );
+					$w = null;
+					$e = null;
+
+					if( $timeout < 0 ) // "no timeout" can be a very long time
+						$ready_count = stream_select( $r, $w, $e, NULL );
+					else
+					{
+						// if $et == $timeout then to_usec == 0, and select() won't block
+						if( $et > $timeout )  // timed out.
+							break;
+
+						$to_sec = $to_usec = 0; // php-style declaration
+						floatsec_to_secusec( $timeout - $et, $to_sec, $to_usec );
+
+						$ready_count = stream_select( $r, $w, $e, $to_sec, $to_usec );
+					}
+
+					// if we're getting errors terminate this loop after 
+					// only a few tries.  this should happen very rarely.
+					if ($loop_count > 4)
+						break;
+				} while ( $ready_count === false );
+
+				if ($ready_count === false)	// needed once in a blue moon.
+					$ready_count = 0;
 			}
-			else
+
+			if ($ready_count > 0)
 			{
-				do {
-					$content .= fread($this->_dHandle, 128);
-				} while (($i += 128) === strlen($content));
+				$tc = 1024*1024;	// READ!!! as much as possible.
+				if ($count !== 0)	// unless otherwise told
+					$tc = ($count - $totcnt);
+
+				$bytes = fread($this->_dHandle, $tc);
+				if( $bytes === false )
+					$error = true;
+				else
+				{
+					$ac = strlen( $bytes ); // strlen() gives *byte* count, including nulls.
+					if( $ac != 0 )
+					{
+						$totcnt += $ac;
+						$content .= $bytes;
+					}
+				}
 			}
 
-			return $content;
-		}
-		elseif ($this->_os === "windows")
-		{
-			// Windows port reading procedures still buggy
-			$content = ""; $i = 0;
-
-			if ($count !== 0)
+			if( $timeout >= 0 )
 			{
-				do {
-					if ($i > $count) $content .= fread($this->_dHandle, ($count - $i));
-					else $content .= fread($this->_dHandle, 128);
-				} while (($i += 128) === strlen($content));
-			}
-			else
-			{
-				do {
-					$content .= fread($this->_dHandle, 128);
-				} while (($i += 128) === strlen($content));
+				$et = microtime( true ) - $starttime;
+				if( $et >= $timeout )	// timed out
+					break;				// break from while() loop. stop everything.
 			}
 
-			return $content;
-		}
+			assert($totcnt === strlen( $content ));
 
-		return false;
+		} while (   $totcnt < $count	// stop if total meets read count sought
+				 && $this->_dBlocking	// !!!  do not loop if non-blocking
+				 && ! $error);			// stop if error
+
+		// we want to report an error if there is one. setting totcnt to 
+		// false doesn't destroy information because totcnt ==
+		// strlen($content) and $content *is* returned.
+		if( $error )
+			$totcnt = false;
+
+		return $totcnt;  // set to false if error
 	}
 
 	/**
@@ -615,19 +869,39 @@ class phpSerial
 	 */
 	function serialflush ()
 	{
+		$success = false;
 		if (!$this->_ckOpened()) return false;
 
-		if (fwrite($this->_dHandle, $this->_buffer) !== false)
+		$init_length = $this->_buflen;
+		$bytes = 0;
+		$written = 0;
+		while( $this->_buflen > 0 && $bytes !== false )
 		{
-			$this->_buffer = "";
-			return true;
+			// long timeout because flush() should take all necessary time.
+			$bytes = $this->writePort( $this->_buffer, $this->_buflen, 5.0 );
+			if( $bytes !== false )
+			{
+				$written += $bytes;
+				$this->_buflen -= $bytes;
+			}
 		}
-		else
-		{
-			$this->_buffer = "";
-			trigger_error("Error while sending message", E_USER_WARNING);
-			return false;
-		}
+
+		// success only truely depends only on if the buffer was actually 
+		// written or not, so report that value regardless of errors.
+		$success = ( $written === $init_length );
+
+		if( $bytes === false )
+			trigger_error('Error while sending message. wrote '.$written.' of '.$init_length.' byte(s) before failing.', E_USER_WARNING);
+
+		// XXX  assert( $this->_buflen === 0 && strlen($this->_buffer) === 0 )
+		if( $this->_buflen !== 0 || strlen($this->_buffer) !== 0 )
+			trigger_error('Internal Error. Flush fell short? wrote '.$written.' of '.$init_length.' byte(s) before exit.', E_USER_WARNING);
+
+		// after flush the buffer is guarenteed to be empty.
+		$this->_buffer = "";
+		$this->_buflen = 0;
+
+		return $success;
 	}
 
 	//
@@ -700,4 +974,16 @@ class phpSerial
 	// INTERNAL TOOLKIT -- {STOP}
 	//
 }
+
+// convert float to pair of ints. sec and usec
+function floatsec_to_secusec( $floatsec, &$sec, &$usec )
+{
+	$usec = $sec = $floatsec;
+	$sec = floor( $sec );	// get int seconds
+	$usec -= $sec;			// get fractional seconds
+	$usec *= 1000000;		// micro is million
+	$usec = floor( $usec );	// discard nanosec
+}
+
+/* vim: set ai noet ts=4  sw=4: */
 ?>
