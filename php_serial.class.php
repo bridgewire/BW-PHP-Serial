@@ -301,6 +301,7 @@ class phpSerial
 			return false;
 		}
 		$this->_dBlocking = $on;
+		return true
 	}
 
 	/**
@@ -770,7 +771,8 @@ class phpSerial
 		if ($timeout !== null && $timeout < 0 ) return 0;
 		if ($timeout === null)                  $timeout = -1;
 
-		$content = "";
+		if ($content === null)
+			$content = "";
 		$starttime = microtime( true );
 		$totcnt = 0;	// at all times, this is the total count of bytes read
 
@@ -846,9 +848,7 @@ class phpSerial
 					break;				// break from while() loop. stop everything.
 			}
 
-			assert($totcnt === strlen( $content ));
-
-		} while (   $totcnt < $count	// stop if total meets read count sought
+		} while (   $totcnt < $count	// if($count == NULL) loop executes once
 				 && $this->_dBlocking	// !!!  do not loop if non-blocking
 				 && ! $error);			// stop if error
 
