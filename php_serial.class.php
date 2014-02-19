@@ -301,7 +301,7 @@ class phpSerial
 			return false;
 		}
 		$this->_dBlocking = $on;
-		return true
+		return true;
 	}
 
 	/**
