@@ -314,12 +314,6 @@ class phpSerial
 	 */
 	function confBaudRate ($rate)
 	{
-		if ($this->_dState !== self::SERIAL_DEVICE_SET)
-		{
-			trigger_error("Unable to set the baud rate : the device is either not set or opened", E_USER_WARNING);
-			return false;
-		}
-
 		$validBauds = array (
 			110    => 11,
 			150    => 15,
@@ -335,28 +329,48 @@ class phpSerial
 			115200 => 115200
 		);
 
-		if (isset($validBauds[$rate]))
-		{
-			if ($this->_os === "linux")
-			{
-                $ret = $this->_exec("stty -F " . $this->_device . " " . (int) $rate, $out);
-            }
-            if ($this->_os === "osx")
-            {
-                $ret = $this->_exec("stty -f " . $this->_device . " " . (int) $rate, $out);
-            }
-            elseif ($this->_os === "windows")
-            {
-                $ret = $this->_exec("mode " . $this->_windevice . " BAUD=" . $validBauds[$rate], $out);
-            }
-            else return false;
+		$ret = false;
+		$havemsg = false;
+		$errmsg = "";
 
-			if ($ret !== 0)
-			{
-				trigger_error ("Unable to set baud rate: " . $out[1], E_USER_WARNING);
-				return false;
-			}
+		if ($this->_dState !== self::SERIAL_DEVICE_SET)
+		{
+			$havemsg = true;
+			$errmsg = "the device is either not set or opened";
 		}
+		elseif (isset($validBauds[$rate]))
+		{
+			$havemsg = true;
+			$out = array(0,"");
+
+			switch( $this->_os )
+			{
+			case 'linux':
+                $ret = (0 === $this->_exec("stty -F " . $this->_device . " " . (int) $rate, $out));
+				break;
+			case 'osx':
+                $ret = (0 === $this->_exec("stty -f " . $this->_device . " " . (int) $rate, $out));
+				break;
+			case 'windows':
+                $ret = (0 === $this->_exec("mode " . $this->_windevice . " BAUD=" . $validBauds[$rate], $out));
+				break;
+			default:
+				$havemsg = false;
+				break;
+            }
+			$errmsg = $out[1];
+		}
+
+		// the purpose of this is to report $out[1], an error message from the _exec'd command
+		if (! $ret)
+		{
+			$msg = 'Unable to set baud rate';
+			if( $havemsg )
+				$msg .= ': '.$out[1];
+			trigger_error( $msg, E_USER_WARNING );
+		}
+
+        return $ret;
 	}
 
 	/**
